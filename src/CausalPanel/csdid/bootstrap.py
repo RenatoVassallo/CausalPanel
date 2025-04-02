@@ -4,34 +4,32 @@ import logging
 from scipy.stats import norm
 from joblib import Parallel, delayed
 
-
 def bootstrap_influence_function(inf_func, DIDparams, pl=False, cores=1):
     """
     Implements multiplier bootstrap for variance estimation.
 
     Parameters:
-    - inf_func: Influence function matrix (NumPy array).
-    - DIDparams: Dictionary containing DID estimation parameters.
-    - pl (bool): Whether to use parallel processing (default: False).
-    - cores (int): Number of cores for parallel processing (default: 1).
+    - inf_func: Influence function matrix (NumPy array of shape n x k)
+    - DIDparams: Dictionary with DiD config and data
+    - pl: Enable parallel processing (bool)
+    - cores: Number of cores (int)
 
     Returns:
-    - Dictionary with:
-        - "bres": Bootstrapped influence function values.
-        - "V": Bootstrap variance matrix.
-        - "se": Bootstrap standard errors.
-        - "crit_val": Critical value for uniform confidence band.
+    - dict with:
+        - bres: Bootstrap influence draws
+        - V: Bootstrap variance-covariance matrix
+        - se: Standard errors
+        - crit_val: Uniform confidence band critical value
     """
+    # Unpack settings
+    data = DIDparams['data']
+    idname = DIDparams['idname']
+    clustervars = DIDparams['clustervars']
+    biters = DIDparams['biters']
+    tname = DIDparams['tname']
+    alp = DIDparams['alp']
 
-    # Extract necessary parameters
-    data = DIDparams["data"]
-    idname = DIDparams["idname"]
-    clustervars = DIDparams["clustervars"]
-    biters = DIDparams["biters"]
-    tname = DIDparams["tname"]
-    alp = DIDparams["alp"]
-
-    # Convert `tlist` to a sorted NumPy array
+     # Convert tlist to a sorted NumPy array
     try:
         tlist = np.sort(data[tname].unique())
     except:
@@ -40,76 +38,73 @@ def bootstrap_influence_function(inf_func, DIDparams, pl=False, cores=1):
     # Get first-period dataset based on panel structure
     dta = data[data[tname] == tlist[0]] 
 
-    # Ensure `inf_func` is a NumPy array
+    # Convert IF to array and count units
     inf_func = np.asarray(inf_func)
-
-    # Number of observations (for clustering below)
     n = inf_func.shape[0]
 
-    # Drop `idname` if it is in `clustervars`
+    # Drop idname from clustervars if needed
     if clustervars and idname in clustervars:
-        clustervars.remove(idname)
+        clustervars = [v for v in clustervars if v != idname]
 
-    # Validate `clustervars`
+    # Validate clustering
     if clustervars:
         if isinstance(clustervars, list) and isinstance(clustervars[0], str):
-            raise ValueError("`clustervars` should be the name of the clustering variable.")
+            raise ValueError("clustervars should be a variable name, not a list of strings.")
         if len(clustervars) > 1:
             raise ValueError("Cannot handle more than one cluster variable.")
-        # Ensure cluster variable does not vary over time within an ID
-        cluster_tv = dta.groupby(idname)[clustervars[0]].nunique() == 1
-        if not cluster_tv.all():
-            raise ValueError("Cannot handle time-varying cluster variables.")
+        cluster_var = clustervars[0]
 
-    # Multiplier Bootstrap
-    if not clustervars:  # No clustering
+        # Check time-invariance
+        cluster_tv = dta.groupby(idname)[cluster_var].nunique() == 1
+        if not cluster_tv.all():
+            raise ValueError("Cluster variable must not vary over time within units.")
+    
+    # Run multiplier bootstrap
+    if not clustervars:
         n_clusters = n
         bres = np.sqrt(n) * run_multiplier_bootstrap(inf_func, biters, pl, cores)
-    else:  # Clustered bootstrap
-        cluster_var = clustervars[0]
-        n_clusters = len(data[cluster_var].drop_duplicates())
-
-        # Map cluster IDs to indices
+    else:
         cluster = dta[[idname, cluster_var]].drop_duplicates().values[:, 1]
-        cluster_n = dta.groupby(cluster).size().values
+        cluster_sizes = dta.groupby(cluster).size().values
+        n_clusters = len(np.unique(cluster))
 
-        # Compute cluster means for influence function
-        cluster_mean_if = pd.DataFrame(inf_func).groupby(cluster).sum().values / cluster_n
+        cluster_mean_if = pd.DataFrame(inf_func).groupby(cluster).sum().values / cluster_sizes[:, None]
         bres = np.sqrt(n_clusters) * run_multiplier_bootstrap(cluster_mean_if, biters, pl, cores)
 
-    # Ensure `bres` is at least a 2D array
+    # Ensure shape consistency
     if bres.ndim == 1:
         bres = np.expand_dims(bres, axis=0)
     elif bres.ndim > 2:
         bres = bres.transpose()
 
-    # Remove degenerate dimensions
-    valid_cols = np.logical_and(~np.isnan(np.sum(bres, axis=0)), np.sum(bres**2, axis=0) > np.sqrt(np.finfo(float).eps) * 10)
-    bres = bres[:, valid_cols]
+    # Filter out degenerate columns
+    ndg_mask = np.logical_and(~np.isnan(np.sum(bres, axis=0)),
+                              np.sum(bres**2, axis=0) > np.sqrt(np.finfo(float).eps) * 10)
+    bres = bres[:, ndg_mask]
 
-    # Bootstrap variance matrix
+    # Compute variance-covariance matrix
     V = np.cov(bres, rowvar=False) if bres.shape[1] > 1 else np.var(bres, axis=0, keepdims=True)
 
-    # Bootstrap standard error
+    # Quantile-based SE estimate
     q75, q25 = np.quantile(bres, [0.75, 0.25], axis=0, method="inverted_cdf")
-    qnorm_75, qnorm_25 = norm.ppf(0.75), norm.ppf(0.25)
-    bSigma = (q75 - q25) / (qnorm_75 - qnorm_25)
+    qnorm75, qnorm25 = norm.ppf(0.75), norm.ppf(0.25)
+    bSigma = (q75 - q25) / (qnorm75 - qnorm25)
 
-    # Critical value for uniform confidence band
+    # Uniform critical value
     bT = np.nanmax(np.abs(bres / bSigma), axis=1)
-    crit_val = np.nanquantile(bT, 1 - alp, method="inverted_cdf")
+    bT = bT[np.isfinite(bT)]
+    cval = np.quantile(bT, 1 - alp, method="inverted_cdf")
 
-    # Compute standard errors
-    se = np.full(valid_cols.shape, np.nan)
-    se[valid_cols] = bSigma / np.sqrt(n_clusters)
+    # Final standard errors
+    se = np.full(ndg_mask.shape, np.nan)
+    se[ndg_mask] = bSigma / np.sqrt(n_clusters)
 
     return {
         "bres": bres,
         "V": V,
         "se": se,
-        "cval": crit_val
+        "cval": cval
     }
-
 
 
 def multiplier_bootstrap(inf_func, biters):
@@ -117,62 +112,55 @@ def multiplier_bootstrap(inf_func, biters):
     Performs multiplier bootstrap using Rademacher weights.
 
     Parameters:
-    - inf_func: Influence function matrix (n x k).
-    - biters: Number of bootstrap iterations.
+    - inf_func: Influence function array (n,) or (n, k)
+    - biters: Number of bootstrap iterations
 
     Returns:
-    - Bootstrapped influence function values (biters x k).
+    - Bootstrapped means (biters x k)
     """
-    n, K = inf_func.shape
-    biters = int(biters)
-    innerMat = np.zeros((n, K))
-    Ub = np.zeros(n)
-    outMat = np.zeros((biters,K))
+    inf_func = np.atleast_2d(inf_func)
+    n, k = inf_func.shape
+    outMat = np.zeros((biters, k))
 
     for b in range(biters):
-        # Draw Rademacher weights (±1 with equal probability)
-        Ub = np.random.choice([1, -1], size=(n, 1))
-
-        # Apply weights to influence function
-        innerMat = inf_func * Ub
-
-        # Compute mean for each bootstrap iteration
-        outMat[b] = np.mean(innerMat, axis=0)
+        # Rademacher weights: ±1
+        weights = np.random.choice([1, -1], size=(n, 1))
+        # Apply to each column of influence function
+        boot_sample = inf_func * weights
+        outMat[b] = np.mean(boot_sample, axis=0)
 
     return outMat
 
+
 def run_multiplier_bootstrap(inf_func, biters, pl=False, cores=1):
     """
-    Wrapper function to run multiplier bootstrap with optional parallelization.
+    Wrapper to run multiplier bootstrap, with optional parallel execution.
 
     Parameters:
-    - inf_func: Influence function matrix (NumPy array).
-    - biters: Number of bootstrap iterations.
-    - pl: Boolean, whether to use parallel computation (default: False).
-    - cores: Number of cores to use for parallelization (default: 1).
+    - inf_func: Influence function array (n,) or (n, k)
+    - biters: Number of bootstrap replications
+    - pl: Use parallel processing (default: False)
+    - cores: Number of parallel cores (default: 1)
 
     Returns:
-    - Bootstrapped influence function values (biters x k).
+    - Bootstrapped ATT estimates (biters x k)
     """
+    inf_func = np.atleast_2d(inf_func)
     n = inf_func.shape[0]
 
-    # If parallel processing is enabled and data is large enough
     if pl and cores > 1 and n > 2500:
-        # Split the iterations across cores
-        chunk_size = biters // cores
-        chunk_sizes = [chunk_size] * cores
-        chunk_sizes[0] += biters - sum(chunk_sizes)  # Adjust to match biters exactly
+        # Distribute biters across cores
+        base = biters // cores
+        chunk_sizes = [base] * cores
+        chunk_sizes[0] += biters - sum(chunk_sizes)  # balance remainder
 
-        # Run parallel bootstrap
+        def parallel_function(b):
+            return multiplier_bootstrap(inf_func, b)
+
         results = Parallel(n_jobs=cores)(
-            delayed(multiplier_bootstrap)(inf_func, chunk) for chunk in chunk_sizes
+            delayed(parallel_function)(chunk) for chunk in chunk_sizes
         )
-        
-        # Combine results
-        results = np.vstack(results)
+        return np.vstack(results)
 
     else:
-        # Run bootstrap normally
-        results = multiplier_bootstrap(inf_func, biters)
-
-    return results
+        return multiplier_bootstrap(inf_func, biters)

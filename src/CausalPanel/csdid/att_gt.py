@@ -118,8 +118,6 @@ class ATTGT:
             bout = bootstrap_influence_function(inffunc.T, dp)
             bres = bout["bres"]
             cval, se, V = bout['cval'], bout['se'], bout['V']
-            print("se bstrap: ", se)
-            print("inffunc: ", inffunc.T)
         
         if self.bstrap and self.cband:
             cval = compute_critical_value(self.alp, bres)
@@ -139,6 +137,8 @@ class ATTGT:
             print("No results available.")
         else:
             summarize_att_gt(self.att_gt_results)
+            
+        return self
 
     
     def plot_att_gt(self, ylim=None, xlab="Periods to treatment", ylab="ATT(g,t)", title="Group", 

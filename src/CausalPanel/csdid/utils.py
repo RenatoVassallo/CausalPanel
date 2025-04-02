@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import warnings
 from scipy.stats import chi2, norm
+from .bootstrap import bootstrap_influence_function
 
 def get_wide_data(data: pd.DataFrame, yname, idname, tname):
     """
@@ -261,7 +262,6 @@ def get_se(thisinffunc, DIDparams=None):
         alp = DIDparams.get("alp", 0.05)
 
     if bstrap:
-        from causalpanel.csdid.bootstrap import bootstrap_influence_function  # Import only if needed
         bout = bootstrap_influence_function(thisinffunc, DIDparams)
         return bout["se"]
     else:

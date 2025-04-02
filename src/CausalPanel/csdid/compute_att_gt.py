@@ -88,8 +88,8 @@ def compute_att_gt(dp, verbose=False):
             # Convert to wide formats
             disdat = get_wide_data(disdat, yname, idname, tname)
             n = len(disdat)
-            disidx = disdat.index[(disdat[".G"] == 1) | (disdat[".C"] == 1)].to_numpy().astype(int)
-            disdat = disdat.loc[disidx, :]
+            dis_mask = (disdat[".G"] == 1) | (disdat[".C"] == 1)
+            disdat = disdat.loc[dis_mask, :]
             n1 = len(disdat)  # Number of observations
 
             if n1 == 0:
@@ -109,18 +109,11 @@ def compute_att_gt(dp, verbose=False):
             # ---------------------------------------------------------------------
             try:
                 att_gt, att_inf_func = drdid_panel(Ypost, Ypre, G, covariates=covariates, i_weights=w, inffunc=True)
-
+  
                 # Initialize influence function storage
                 inf_zeros = np.zeros(n, dtype=float)
-
-                # Convert global `disidx` indices to local indices within `disdat`
-                valid_disidx = np.where(np.isin(disdat.index, disidx))[0]
-
-                # Ensure valid_disidx is within bounds of att_inf_func
-                if len(valid_disidx) == len(att_inf_func):
-                    inf_zeros[valid_disidx] = (n / n1) * att_inf_func
-                else:
-                    logging.warning(f"Mismatch: Expected {len(valid_disidx)}, found {len(att_inf_func)} in att_inf_func.")
+                att_inf = (n / n1) * att_inf_func
+                inf_zeros[dis_mask.to_numpy()] = att_inf
 
                 # Store Results
                 add_att_data(group_treatment, current_period, att=att_gt, pst=post_treat, inf_f=inf_zeros)
@@ -130,7 +123,7 @@ def compute_att_gt(dp, verbose=False):
                 add_att_data(group_treatment, current_period, att=np.nan, pst=post_treat, inf_f=np.zeros(n))
 
     # Convert to NumPy arrays for better performance
-    group, time, att_est, post_array = map(np.array, [group, time, att_est, post_array])
+    #group, time, att_est, post_array = map(np.array, [group, time, att_est, post_array])
 
     # Stack influence functions, ensuring non-empty
     inf_func = np.vstack(inf_func) if inf_func else np.zeros((len(group), len(data)))
