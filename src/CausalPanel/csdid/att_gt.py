@@ -8,7 +8,7 @@ from .preprocess import preprocess_did
 from .compute_att_gt import compute_att_gt
 from .compute_aggte import compute_aggte
 from .bootstrap import bootstrap_influence_function
-from .summary import summarize_att_gt
+from .summary import summarize_att_gt, summarize_agg_dynamic
 from .plots import individual_plot
 from .utils import *
 
@@ -220,8 +220,14 @@ class ATTGT:
         """
         if self.aggte_results is None:
             print("No aggregated results available. Run aggregate_att_gt() first.")
-        else:
-            print("Summary of aggregated ATT:", self.aggte_results)
+        elif self.aggte_results["agg_method"] == "dynamic":
+            print("Summary of aggregated ATT for ", self.aggte_results["agg_method"], "method")
+            summarize_agg_dynamic(self.aggte_results)
+        elif self.aggte_results["agg_method"] == "group":   
+            print("Summary of aggregated ATT for ", self.aggte_results["agg_method"], "method")
+            summarize_agg_group(self.att_gt_results)
+        else:   
+            print("No aggregated results available. Run aggregate_att_gt() first.")
     
     def plot_aggte(self, ylim=(-0.3, 0.3)):
         """
