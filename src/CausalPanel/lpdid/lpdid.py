@@ -26,8 +26,14 @@ def lpdid(df, y, time, unit, treat, pre, post, reweight=False, composition_corre
     pre_window, post_window = -pre, post
 
     # Ensure df is a copy before modifications
-    df = df[[y,time,unit,treat]].copy()
-    df[unit] = df[unit].astype(int)
+    df = df[[y, time, unit, treat]].copy()
+
+    # Convert unit to integer IDs if not already numeric
+    if not pd.api.types.is_integer_dtype(df[unit]):
+        df[unit], unit_mapping = pd.factorize(df[unit])
+    else:
+        unit_mapping = None
+
     df[time] = df[time].astype(int)
 
     # Identify first treatment period per unit
@@ -140,7 +146,11 @@ def lpdid(df, y, time, unit, treat, pre, post, reweight=False, composition_corre
     print("\nLP-DiD Event Study Estimates\n")
     print(tabulate(coeftable, headers='keys', tablefmt='outline', floatfmt=".6f"))
 
-    return {'coeftable': coeftable, 'reg_results': reg_results}
+    return {
+        'coeftable': coeftable,
+        'reg_results': reg_results,
+        'unit_mapping': dict(enumerate(unit_mapping)) if unit_mapping is not None else None
+    }
 
 
 def plot_lpdid(reg, conf=0.95, segments=True, add=False,
