@@ -6,7 +6,7 @@ authors = [
   { name = "Renato Vassallo", email = "renato.vassallo@bse.eu" }
 ]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11, <3.12"
 dependencies = [
   "numpy>=2.2.3",
   "pandas>=2.2.3",
@@ -25,12 +25,13 @@ dependencies = [
   "python-dotenv>=1.0.1",
   "scipy>=1.15.2",
   "panelsplit @ git+https://github.com/4Freye/panelsplit.git@main",
+  "global-macro-data>=0.3.1",
+  "dropbox-helper"
 ]
 
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
-#[tool.setuptools.packages.find]
-#include = ["CausalPanel"]
-#exclude = ["input", "pipeline", "notebooks"]
+[tool.uv.sources]
+dropbox-helper = { git = "https://github.com/EconAIorg/dropbox_helper.git" }

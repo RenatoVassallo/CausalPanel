@@ -1,11 +1,10 @@
 # Ignore Python cache files
 __pycache__/
 *.py[cod]
+*.egg-info/
 
 #ignore local environment
 .env
-
-#ignore virtual environment
 .venv
 
 *input/

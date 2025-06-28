@@ -18,10 +18,14 @@ def preprocess_did(yname, tname, idname, gname, data: pd.DataFrame, control_grou
     if not isinstance(data, pd.DataFrame):
         data = pd.DataFrame(data)
 
-    # Ensure numeric data types
+    # Convert non-numeric ID/time/group columns to integers
+    factor_mappings = {}
     for col in [idname, tname, gname]:
         if not np.issubdtype(data[col].dtype, np.number):
-            raise ValueError(f"{col} must be numeric")
+            data[col], mapping = pd.factorize(data[col])
+            factor_mappings[col] = dict(enumerate(mapping))
+        else:
+            factor_mappings[col] = None
 
     # Handle covariate formula
     if xformla is None:
@@ -150,6 +154,7 @@ def preprocess_did(yname, tname, idname, gname, data: pd.DataFrame, control_grou
         "alp": alp,
         "bstrap": bstrap,
         "biters": biters,
-        "cband": cband
+        "cband": cband,
+        'factor_mappings': factor_mappings
     }
     return dp

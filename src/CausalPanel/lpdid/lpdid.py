@@ -1,213 +1,250 @@
-import numpy as np
 import pandas as pd
+import numpy as np
 import statsmodels.formula.api as smf
 from scipy.stats import norm
 from tabulate import tabulate
-import matplotlib.pyplot as plt
+from IPython.display import display
+from .plot_lpdid import plot_lpdid
 
-def lpdid(df, y, time, unit, treat, pre, post, reweight=False, composition_correction=False):
-    """
-    Local Projections Difference-in-Differences (LP-DiD) estimation with proper filtering conditions.
+class LPDID:
+    def __init__(self, df: pd.DataFrame, y: str, treat: str, time: str, unit: str, pre: int, post: int,
+                 lags: int = 0, reweight: bool = False, control_group: str = "notyet", clean_control_L: int = 4,
+                 absorbing: bool = True):
+        self.df = df.copy()
+        self.y = y
+        self.treat = treat
+        self.time = time
+        self.unit = unit
+        self.pre = pre
+        self.post = post
+        self.lags = lags
+        self.reweight = reweight
+        self.control_group = control_group
+        self.clean_control_L = clean_control_L
+        self.absorbing = absorbing
+        self.results = None
 
-    Parameters:
-    df (pd.DataFrame): The dataset used in the analysis.
-    y (str): The dependent variable (outcome).
-    time (str): The column representing time.
-    unit (str): The column representing unit ID.
-    treat (str): The column indicating treatment status (0 before treatment, 1 after treatment).
-    pre (int): The number of pre-treatment periods.
-    post (int): The number of post-treatment periods.
-    reweight (bool): If True, applies custom reweighting; otherwise, defaults to weight = 1.
-    composition_correction (bool): If True, removes later-treated observations from control.
+        self._prepare_data()
 
-    Returns:
-    dict: A dictionary including coefficient table, observation counts, and regression results.
-    """
-    pre_window, post_window = -pre, post
+    def _prepare_data(self):
+        df = self.df[[self.y, self.time, self.unit, self.treat]].copy()
+        df[self.time] = df[self.time].astype(int)
+        df = df.sort_values([self.unit, self.time])
 
-    # Ensure df is a copy before modifications
-    df = df[[y, time, unit, treat]].copy()
+        if not pd.api.types.is_integer_dtype(df[self.unit]):
+            df[self.unit], _ = pd.factorize(df[self.unit])
 
-    # Convert unit to integer IDs if not already numeric
-    if not pd.api.types.is_integer_dtype(df[unit]):
-        df[unit], unit_mapping = pd.factorize(df[unit])
-    else:
-        unit_mapping = None
+        # Treat timing
+        treated_df = df[df[self.treat] > 0]
+        treat_dates = treated_df.groupby(self.unit)[self.time].min().reset_index()
+        treat_dates.columns = [self.unit, 'treat_date']
+        df = df.merge(treat_dates, on=self.unit, how='left')
 
-    df[time] = df[time].astype(int)
+        # Relative timing
+        df['rel_time'] = df[self.time] - df['treat_date']
+        df['treat_indicator'] = (df['rel_time'] >= 0).astype(int)
+        df['treat_diff'] = df['treat_indicator'].diff().fillna(0).clip(lower=0)
+        df['reweight_use'] = 1
 
-    # Identify first treatment period per unit
-    treated_df = df[df[treat] > 0].copy()
-    treat_dates = treated_df.groupby(unit)[time].min().reset_index()
-    treat_dates.columns = [unit, 'treat_date']
+        df['D_treat'] = df.groupby(self.unit)[self.treat].diff().fillna(0).abs()
+        df['past_events'] = df.groupby(self.unit)['D_treat'].cumsum().fillna(0)
 
-    # Merge treatment dates
-    df = df.merge(treat_dates, on=unit, how='left')
-    df['rel_time'] = df[time] - df['treat_date']
-    
-    # Define treatment indicator and first difference variable
-    df['treat_indicator'] = (df['rel_time'] >= 0).astype(int)
-    df['treat_diff'] = df['treat_indicator'].diff().fillna(0).clip(lower=0)
+        # Clean control sample logic
+        self._generate_clean_controls(df)
+        self.df = df
 
-    # Set default weights to 1 if reweighting is not used
-    if not reweight:
-        df['reweight_0'] = df['reweight_use'] = 1
-
-    # Initialize storage for results
-    betas = []
-    SEs = []
-    nobs = []
-    reg_results = []
-    
-    # Compute backward differences (pre-treatment effects)
-    for j in range(abs(pre_window), 0, -1):  # Includes pre1
-        df[f'Dm{j}y'] = df.groupby(unit)[y].shift(j) - df.groupby(unit)[y].shift(1)  # Compute lag differences
-
-        # Define regression formula
-        formula = f'Dm{j}y ~ treat_diff'
-        
-        # Apply filtering conditions
-        lim = df[f'Dm{j}y'].notna() & df['treat_diff'].notna() & df[treat].notna()
-        
-        if composition_correction:
-            max_t = df[time].max()
-            lim = lim & ((df['treat_diff'] == 1) | (df.groupby(unit)[treat].shift(-post_window).fillna(0) == 0)) & \
-                  (df['treat_date'].isna() | (df['treat_date'] < max_t - post_window))
+    def _generate_clean_controls(self, df):
+        if self.absorbing:
+            for h in range(0, self.post + 1):
+                df[f"CCS_{h}"] = ((df["D_treat"] == 1) | (df.groupby(self.unit)[self.treat].shift(-h).fillna(0) == 0)).astype(int)
+            for h in range(1, self.pre + 1):
+                df[f"CCS_m{h}"] = df["CCS_0"]
         else:
-            lim = lim & ((df['treat_diff'] == 1) | (df[treat] == 0))
+            df["CCS_0"] = 0
+            cond = (df["D_treat"].isin([0, 1])) & (df.groupby(self.unit)["D_treat"].shift(1).fillna(0).abs() != 1)
+            for k in range(2, self.clean_control_L + 1):
+                cond &= (df.groupby(self.unit)["D_treat"].shift(k).fillna(0).abs() != 1)
+            df.loc[cond, "CCS_0"] = 1
+
+            for h in range(1, self.post + 1):
+                df[f"CCS_{h}"] = 0
+                df.loc[(df[f"CCS_{h - 1}"] == 1) &
+                       (df.groupby(self.unit)["D_treat"].shift(-h).fillna(0).abs() != 1), f"CCS_{h}"] = 1
+
+            df["CCS_m1"] = df["CCS_0"]
+            for h in range(2, self.pre + 1):
+                df[f"CCS_m{h}"] = 0
+                df.loc[(df[f"CCS_m{h - 1}"] == 1) &
+                       (df.groupby(self.unit)[f"CCS_m{h - 1}"].shift(1).fillna(0) == 1), f"CCS_m{h}"] = 1
+
+        if self.control_group == "never":
+            df['max_treat'] = df.groupby(self.unit)[self.treat].transform('max')
+            df['never_treated'] = (df['max_treat'] == 0).astype(int)
+            for h in range(0, self.post + 1):
+                df.loc[(df['D_treat'] == 0) & (df['never_treated'] == 0), f"CCS_{h}"] = 0
+            for h in range(2, self.pre + 1):
+                df.loc[(df['D_treat'] == 0) & (df['never_treated'] == 0), f"CCS_m{h}"] = 0
+            df.drop(columns=['max_treat'], inplace=True)
+
+        elif self.control_group == "notyet":
+            df['first_obs'] = df.groupby(self.unit)[self.time].transform('min')
+            df['status_entry_help'] = df[self.treat].where(df[self.time] == df['first_obs'])
+            df['status_entry'] = df.groupby(self.unit)['status_entry_help'].transform('max')
+
+            for j in range(0, self.post + 1):
+                df[f'nyt_{j}'] = 0
+                df.loc[(df.groupby(self.unit)['past_events'].shift(-j).fillna(0) == 0) &
+                       (df['status_entry'] == 0), f'nyt_{j}'] = 1
+
+            for j in range(0, self.post + 1):
+                df.loc[(df['D_treat'] == 0) & (df[f'nyt_{j}'] == 0), f'CCS_{j}'] = 0
+            for j in range(2, self.pre + 1):
+                df.loc[(df['D_treat'] == 0) & (df['nyt_0'] == 0), f'CCS_m{j}'] = 0
+
+    def _run_regression(self, dep_var: str, shift: int, is_post: bool):
+        """
+        Run OLS regression with optional lag controls.
+        """
+        df = self.df.copy()
+
+        df[dep_var] = (
+            df.groupby(self.unit)[self.y]
+            .shift(-shift if is_post else shift) -
+            df.groupby(self.unit)[self.y].shift(1)
+        )
+
+        # Base formula
+        formula = f'{dep_var} ~ treat_diff'
+
+        # Add lagged outcomes to formula
+        for l in range(1, self.lags + 1):
+            lag_col = f'{self.y}_lag{l}'
+            df[lag_col] = df.groupby(self.unit)[self.y].shift(l)
+            formula += f' + {lag_col}'
+
+        # Treatment condition logic (same as before)
+        lead_treat = df.groupby(self.unit)[self.treat].shift(-shift if is_post else shift)
+        lim = df[dep_var].notna() & df['treat_diff'].notna() & lead_treat.notna()
+
+        # Apply sample restrictions (same logic as before)
+        if self.control_group == "never":
+            max_t = df[self.time].max()
+            lim &= (
+                (df['treat_diff'] == 1) |
+                (df.groupby(self.unit)[self.treat].shift(-self.post).fillna(0) == 0)
+            ) & (
+                df['treat_date'].isna() | (df['treat_date'] < max_t - self.post)
+            )
+        else:
+            if self.absorbing:
+                treated_cond = (df['treat_diff'] == 1) & (df.get('CCS_0', 1) == 1)
+                control_cond = (lead_treat.fillna(0) == 0)
+            else:
+                treated_cond = (
+                    (df['treat_diff'] == 1) &
+                    (df.get(f'CCS_{self.post}', 0) == 1) &
+                    (df.get(f'CCS_m{self.pre}', 0) == 1)
+                )
+                control_cond = (
+                    (lead_treat.fillna(0) == 0) &
+                    (df.get(f'nyt_{self.post}', 0) == 1)
+                )
+            lim &= treated_cond | control_cond
 
         if lim.sum() > 0:
-            weights = df.loc[lim, 'reweight_use'].values if reweight else None
-            model = smf.ols(formula, data=df[lim]).fit(
-                cov_type="cluster", cov_kwds={"groups": df.loc[lim, unit].values}, weights=weights
+            df_lim = df.loc[lim].copy()
+
+            # Drop rows with missing lags
+            if self.lags:
+                lagged_vars = [f'{self.y}_lag{l}' for i in range(1, self.lags + 1)]
+                df_lim = df_lim.dropna(subset=lagged_vars)
+
+            # Make sure group and weights are aligned with df_lim
+            groups = df_lim[self.unit].to_numpy()
+
+            if self.reweight:
+                weights = df_lim['reweight_use'].to_numpy()
+            else:
+                weights = None
+
+            assert len(groups) == len(df_lim), "Mismatch between groups and df_lim"
+            if weights is not None:
+                assert len(weights) == len(df_lim), "Mismatch between weights and df_lim"
+
+            model = smf.ols(formula, data=df_lim).fit(
+                cov_type="cluster",
+                cov_kwds={"groups": groups},
+                weights=weights
             )
-            betas.append(model.params['treat_diff'])
-            SEs.append(model.bse['treat_diff'])
-            nobs.append(model.nobs)
-            reg_results.append(model)
+            return model.params['treat_diff'], model.bse['treat_diff'], model.nobs
         else:
-            betas.append(np.nan)
-            SEs.append(np.nan)
-            nobs.append(np.nan)
-            reg_results.append(None)
+            return np.nan, np.nan, np.nan
 
-    # Compute forward differences (post-treatment effects)
-    for j in range(0, post_window + 1):
-        df[f'D{j}y'] = df.groupby(unit)[y].shift(-j) - df.groupby(unit)[y].shift(1)  # Compute lead differences
+    def _summary(self, results: pd.DataFrame) -> pd.DataFrame:
+        """
+        Summarize the LP-DiD regression results with statistical significance information.
+        """
+        coeftable = results.copy()
+        coeftable['t value'] = coeftable['Estimate'] / coeftable['Std. Error']
+        coeftable['P>|t|'] = 2 * norm.sf(abs(coeftable['t value']))  # Two-tailed
+        coeftable['CI Lower'] = coeftable['Estimate'] - 1.96 * coeftable['Std. Error']
+        coeftable['CI Upper'] = coeftable['Estimate'] + 1.96 * coeftable['Std. Error']
+        coeftable['E-time'] = coeftable['window'].apply(
+            lambda x: f'pre{abs(x)}' if x < 0 else (f'tau{x}' if x > 0 else 'tau0')
+        )
 
-        # Define regression formula
-        formula = f'D{j}y ~ treat_diff'
+        coeftable = coeftable[['E-time', 'Estimate', 'Std. Error', 't value', 'P>|t|',
+                            'CI Lower', 'CI Upper', 'nobs']]
+
+        print("\nLP-DiD Event Study Estimates\n")
+        print(tabulate(coeftable, headers='keys', tablefmt='outline', floatfmt=".6f"))
         
-        # Apply filtering conditions
-        lead_treat = df.groupby(unit)[treat].shift(-j)
-        lim = df[f'D{j}y'].notna() & df['treat_diff'].notna() & lead_treat.notna()
-        
-        if composition_correction:
-            max_t = df[time].max()
-            lim = lim & ((df['treat_diff'] == 1) | (df.groupby(unit)[treat].shift(-post_window).fillna(0) == 0)) & \
-                  (df['treat_date'].isna() | (df['treat_date'] < max_t - post_window))
-        else:
-            lim = lim & ((df['treat_diff'] == 1) | (lead_treat.fillna(0) == 0))
+        return coeftable
 
-        if lim.sum() > 0:
-            weights = df.loc[lim, 'reweight_use'].values if reweight else None
-            model = smf.ols(formula, data=df[lim]).fit(
-                cov_type="cluster", cov_kwds={"groups": df.loc[lim, unit].values}, weights=weights
-            )
-            betas.append(model.params['treat_diff'])
-            SEs.append(model.bse['treat_diff'])
-            nobs.append(model.nobs)
-            reg_results.append(model)
-        else:
-            betas.append(np.nan)
-            SEs.append(np.nan)
-            nobs.append(np.nan)
-            reg_results.append(None)
+    def fit(self):
+        """
+        Fit the LP-DiD model and store event-study results internally.
+        """
+        betas, SEs, nobs = [], [], []
 
-    # Construct output dataframe
-    coeftable = pd.DataFrame({
-        'window': list(range(pre_window, post_window + 1)),
-        'Estimate': betas,
-        'Std. Error': SEs,
-        'nobs': nobs
-    })
+        for j in range(self.pre, 0, -1):
+            b, se, n = self._run_regression(f'Dm{j}y', j, is_post=False)
+            betas.append(b)
+            SEs.append(se)
+            nobs.append(n)
 
-    coeftable['t value'] = coeftable['Estimate'] / coeftable['Std. Error']
-    coeftable['P>|t|'] = norm.sf(abs(coeftable['t value']))
-    coeftable['CI Lower'] = coeftable['Estimate'] - 1.96 * coeftable['Std. Error']
-    coeftable['CI Upper'] = coeftable['Estimate'] + 1.96 * coeftable['Std. Error']
+        for j in range(0, self.post + 1):
+            b, se, n = self._run_regression(f'D{j}y', j, is_post=True)
+            betas.append(b)
+            SEs.append(se)
+            nobs.append(n)
 
-    # Formatting for output
-    coeftable['E-time'] = coeftable['window'].apply(lambda x: f'pre{abs(x)}' if x < 0 else (f'tau{x}' if x > 0 else 'tau0'))
-    coeftable = coeftable.sort_values(by='window').reset_index(drop=True)
-    coeftable = coeftable[['E-time', 'Estimate', 'Std. Error', 't value', 'P>|t|', 'CI Lower', 'CI Upper', 'nobs']]
+        windows = list(range(-self.pre, self.post + 1))
+        self.results = pd.DataFrame({
+            'window': windows,
+            'Estimate': betas,
+            'Std. Error': SEs,
+            'nobs': nobs
+        })
 
-    # Print formatted table
-    print("\nLP-DiD Event Study Estimates\n")
-    print(tabulate(coeftable, headers='keys', tablefmt='outline', floatfmt=".6f"))
+        # Normalize placebo estimate to zero for interpretability
+        self.results.loc[self.results['window'] == -1, 'Estimate'] = 0
 
-    return {
-        'coeftable': coeftable,
-        'reg_results': reg_results,
-        'unit_mapping': dict(enumerate(unit_mapping)) if unit_mapping is not None else None
-    }
+        # Generate summary table
+        self.results = self._summary(self.results)
 
+        return self  
 
-def plot_lpdid(reg, conf=0.95, segments=True, add=False,
-               xlab="Time to Treatment", ylab="Coefficient Estimate and 95% Confidence Interval",
-               ylim=None, main="", x_shift=0,
-               point_size=5, color="black", opacity=1):
-    """
-    Plot LP-DiD Event Study Estimates
-    
-    Parameters:
-    reg (pd.DataFrame): DataFrame containing LP-DiD results from lpdid function.
-    conf (float): Confidence level (default: 0.95).
-    segments (bool): Whether to show confidence intervals (default: True).
-    add (bool): Whether to add to an existing figure (default: False).
-    xlab (str): X-axis label.
-    ylab (str): Y-axis label.
-    ylim (tuple): Limits for the Y-axis (default: auto).
-    main (str): Title of the plot.
-    x_shift (float): Shift in x-axis values.
-    point_size (int): Size of the points.
-    color (str): Color of points and confidence intervals.
-    opacity (float): Opacity of points and confidence intervals.
+    def event_study_plot(self, conf: float = 0.95, xlabel: str = "Time to treatment", ylabel: str = "Estimates and 95% CI", 
+                        title: str = "LP-DiD Results", ylim: tuple = None, ci_type: str = "area", xthicks_interval: int = 5,
+                        yticks_interval: int = 5, color: str = "black"):
+        """
+        Plot the LP-DiD results with confidence intervals.
+        """
+        if self.results is None:
+            raise ValueError("No results available. Run fit() before plotting.")
 
-    Returns:
-    None: Displays the plot.
-    """
-
-    # Extract relevant values
-    coeftable = reg.copy()
-    coeftable["t"] = coeftable["E-time"].str.replace("pre", "-").str.replace("tau", "").astype(int)
-    
-    conf_z = norm.ppf(1 - (1 - conf) / 2)
-    coeftable["uCI"] = coeftable["Estimate"] + conf_z * coeftable["Std. Error"]
-    coeftable["lCI"] = coeftable["Estimate"] - conf_z * coeftable["Std. Error"]
-
-    # Determine y-axis limits
-    if ylim is None:
-        ylim = (min(coeftable["lCI"]), max(coeftable["uCI"]))
-
-    # Create the plot
-    if not add:
-        plt.figure(figsize=(8, 5))
-        plt.scatter(coeftable["t"] + x_shift, coeftable["Estimate"], s=point_size * 10,
-                    color=color, alpha=opacity, label="Estimate")
-        plt.axhline(y=0, color="black", linestyle="dashed")
-        plt.axvline(x=-1, color="black", linestyle="dashed")
-
-        # Labels and title
-        plt.xlabel(xlab)
-        plt.ylabel(ylab)
-        plt.title(main)
-        plt.ylim(ylim)
-    
-    # Add confidence intervals as vertical segments
-    if segments:
-        for i, row in coeftable.iterrows():
-            plt.plot([row["t"] + x_shift, row["t"] + x_shift], [row["uCI"], row["lCI"]],
-                     color=color, alpha=opacity, linewidth=1)
-
-    plt.show()  # Display the plot
+        p = plot_lpdid(self.results, conf=conf, xlab=xlabel, ylab=ylabel, title=title, ylim=ylim, ci_type=ci_type,
+                       xticks_interval=xthicks_interval, yticks_interval=yticks_interval, color=color)
+        display(p)
+        return p
