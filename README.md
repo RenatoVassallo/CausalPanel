@@ -6,13 +6,13 @@
 
 ## 📦 Key Components
 
-1. **CSDID**
+1. **CSDID**  
    Implementation of the Difference-in-Differences method by **Callaway and Sant' Anna**, ideal for treatment effect estimation with staggered adoption.
 
-2. **LPDID**
+2. **LPDID**  
    A **Local Projections Difference-in-Differences** method based on **Dube et al. (2025)**, designed to flexibly estimate dynamic treatment effects across time horizons.
 
-3. **WindowGenerator**
+3. **WindowGenerator**  
    Developed by **Eric Frey**, this utility transforms standard panel data into **2x2 DiD windows**, generating treatment and control groups using **nearest-neighbor matching** and customizable window configurations for counterfactual analysis.
 
 ---
@@ -60,11 +60,5 @@ If you use *CausalPanel* in your work, please cite:
 
 > Vassallo, R. (2025). *CausalPanel: A toolkit for causal inference in panel data settings.*
 > [GitHub Repository](https://github.com/RenatoVassallo/CausalPanel)
-
----
-
-## 💬 Why CausalPanel?
-
-*CausalPanel combines robustness and flexibility, helping researchers generate counterfactuals and estimate causal effects with modern panel-data methods — from simple DiD to advanced event-study analyses.*
 
 ---
