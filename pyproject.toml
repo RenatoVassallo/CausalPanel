@@ -1,7 +1,7 @@
 [project]
 name = "CausalPanel"
-version = "0.1.0"
-description = "Causal inference in panel data"
+version = "0.1.1"
+description = "A toolkit for causal inference in panel data settings."
 authors = [
   { name = "Renato Vassallo", email = "renato.vassallo@bse.eu" }
 ]
@@ -10,23 +10,30 @@ requires-python = ">=3.11, <3.12"
 dependencies = [
   "numpy>=2.2.3",
   "pandas>=2.2.3",
-  "ipykernel==6.29.5",
-  "tqdm>=4.67.1",
-  "matplotlib>=3.10.0",
-  "seaborn>=0.13.2",
   "statsmodels>=0.14.4",
   "scikit-learn>=1.6.1",
   "tabulate>=0.9.0",
-  "openpyxl>=3.1.5",
   "joblib>=1.4.2",
   "plotnine>=0.14.5",
-  "requests>=2.32.3",
-  "dropbox>=12.0.2",
-  "python-dotenv>=1.0.1",
   "scipy>=1.15.2",
-  "panelsplit @ git+https://github.com/4Freye/panelsplit.git@main",
-  "global-macro-data>=0.3.1",
-  "dropbox-helper"
+  "panelsplit @ git+https://github.com/4Freye/panelsplit.git@main"
+]
+
+[dependency-groups]
+dev = [
+    "pyarrow>=20.0.0",
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.6",
+    "matplotlib>=3.10.1",
+    "python-dotenv>=1.1.0",
+    "seaborn>=0.13.2",
+    "xlsxwriter==3.2.2",
+    "openpyxl==3.1.5",
+    "tqdm>=4.67.1",
+    "dropbox>=12.0.2",
+    "global-macro-data>=0.3.1",
+    "dropbox-helper",
+    "requests>=2.32.3",
 ]
 
 [build-system]

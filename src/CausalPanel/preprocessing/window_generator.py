@@ -7,6 +7,10 @@ class WindowGenerator:
     """
     Generate treatment and control windows for time-series data analysis.
 
+    Author
+    ------
+    Eric Frey (eric.frey@bse.eu)
+
     Parameters
     ----------
     DataFrame : pd.DataFrame
